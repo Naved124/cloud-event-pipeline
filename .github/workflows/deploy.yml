@@ -35,7 +35,6 @@ jobs:
           }
           EOF
           
-          # 1. Send the command using the tag and capture the Command ID
           COMMAND_ID=$(aws ssm send-command \
             --targets "Key=tag:Name,Values=CloudEventPipelineServer" \
             --document-name "AWS-RunShellScript" \
@@ -45,15 +44,23 @@ jobs:
             
           echo "Command queued with ID: $COMMAND_ID"
           
-          # 2. Dynamically fetch the ID of the running instance that has the tag
+          # Wait 5 seconds to ensure AWS registers the instance state
+          sleep 5 
+          
           INSTANCE_ID=$(aws ec2 describe-instances \
             --filters "Name=tag:Name,Values=CloudEventPipelineServer" "Name=instance-state-name,Values=running" \
             --query "Reservations[0].Instances[0].InstanceId" \
             --output text)
             
+          # Safety check to prevent the 'None' regex crash
+          if [ "$INSTANCE_ID" == "None" ] || [ -z "$INSTANCE_ID" ]; then
+            echo "Error: No running instance found with tag Name=CloudEventPipelineServer."
+            echo "Did you run 'terraform apply'?"
+            exit 1
+          fi
+            
           echo "Waiting for execution on instance: $INSTANCE_ID..."
           
-          # 3. Block the pipeline until the server reports Success or Failed
           aws ssm wait command-executed \
             --command-id "$COMMAND_ID" \
             --instance-id "$INSTANCE_ID"
