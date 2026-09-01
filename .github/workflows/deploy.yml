@@ -39,3 +39,17 @@ jobs:
             --document-name "AWS-RunShellScript" \
             --parameters file://params.json \
             --output text
+            # Capture the resulting CommandId
+          COMMAND_ID=$(aws ssm send-command \
+            --instance-ids "${{ secrets.EC2_INSTANCE_ID }}" \
+            --document-name "AWS-RunShellScript" \
+            --parameters file://params.json \
+            --query "Command.CommandId" \
+            --output text)
+            
+          echo "Waiting for command $COMMAND_ID to finish execution on the server..."
+          
+          # Block the pipeline until the server reports Success or Failed
+          aws ssm wait command-executed \
+            --command-id "$COMMAND_ID" \
+            --instance-id "${{ secrets.EC2_INSTANCE_ID }}"
