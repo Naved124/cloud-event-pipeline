@@ -14,6 +14,7 @@ A production-grade, containerized Go backend integrated with a PostgreSQL databa
 * **Cloud Provider:** AWS (Free Tier eligible)
 
 ---
+
 ## Project Structure
 
 ```text
