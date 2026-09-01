@@ -56,16 +56,39 @@ resource "aws_key_pair" "deployer" {
   public_key = file("~/.ssh/cloud_event_key.pub")
 }
 
+resource "aws_iam_role" "ssm_role" {
+  name = "cloud-event-ssm-role"
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Action    = "sts:AssumeRole"
+      Effect    = "Allow"
+      Principal = { Service = "ec2.amazonaws.com" }
+    }]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "ssm_policy" {
+  role       = aws_iam_role.ssm_role.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+}
+
+resource "aws_iam_instance_profile" "ssm_profile" {
+  name = "cloud-event-ssm-profile"
+  role = aws_iam_role.ssm_role.name
+}
+
 resource "aws_instance" "web_server" {
-  ami           = data.aws_ami.ubuntu.id
-  instance_type = "t3.micro"
-  key_name      = aws_key_pair.deployer.key_name
+  ami                    = data.aws_ami.ubuntu.id
+  instance_type          = "t3.micro"
+  key_name               = aws_key_pair.deployer.key_name
   vpc_security_group_ids = [aws_security_group.web_sg.id]
+  iam_instance_profile   = aws_iam_instance_profile.ssm_profile.name
 
   user_data = <<-EOF
               #!/bin/bash
               apt-get update -y
-              apt-get install -y docker.io docker-compose-v2
+              apt-get install -y docker.io docker-compose-v2 git
               systemctl start docker
               systemctl enable docker
               usermod -aG docker ubuntu
@@ -78,4 +101,8 @@ resource "aws_instance" "web_server" {
 
 output "instance_public_ip" {
   value = aws_instance.web_server.public_ip
+}
+
+output "instance_id" {
+  value = aws_instance.web_server.id
 }
