@@ -11,6 +11,11 @@ provider "aws" {
   region = "us-east-1" 
 }
 
+variable "my_ip" {
+  description = "Your public IP in CIDR format, for SSH access"
+  type        = string
+}
+
 data "aws_ami" "ubuntu" {
   most_recent = true
   owners      = ["099720109477"] # Canonical
@@ -28,7 +33,7 @@ resource "aws_security_group" "web_sg" {
     from_port   = 22
     to_port     = 22
     protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
+    cidr_blocks = [var.my_ip]
   }
 
   ingress {

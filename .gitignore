@@ -7,3 +7,4 @@
 # OS & Build
 server
 .env
+terraform.tfvars

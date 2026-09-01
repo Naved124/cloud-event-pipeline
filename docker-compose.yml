@@ -5,9 +5,9 @@ services:
       - "8080:8080"
     environment:
       - DB_HOST=postgres
-      - DB_USER=appuser
-      - DB_PASSWORD=secretpassword
-      - DB_NAME=eventdb
+      - DB_USER=${DB_USER}
+      - DB_PASSWORD=${DB_PASSWORD}
+      - DB_NAME=${DB_NAME}
       - DB_PORT=5432
     depends_on:
       postgres:
@@ -16,11 +16,9 @@ services:
   postgres:
     image: postgres:16-alpine
     environment:
-      - POSTGRES_USER=appuser
-      - POSTGRES_PASSWORD=secretpassword
-      - POSTGRES_DB=eventdb
-    ports:
-      - "5432:5432"
+      - POSTGRES_USER=${DB_USER}
+      - POSTGRES_PASSWORD=${DB_PASSWORD}
+      - POSTGRES_DB=${DB_NAME}
     volumes:
       - pgdata:/var/lib/postgresql/data
 
