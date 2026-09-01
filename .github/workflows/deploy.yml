@@ -35,13 +35,13 @@ jobs:
           }
           EOF
           aws ssm send-command \
-            --instance-ids "${{ secrets.EC2_INSTANCE_ID }}" \
+            --targets "Key=tag:Name,Values=CloudEventPipelineServer" \
             --document-name "AWS-RunShellScript" \
             --parameters file://params.json \
             --output text
             # Capture the resulting CommandId
           COMMAND_ID=$(aws ssm send-command \
-            --instance-ids "${{ secrets.EC2_INSTANCE_ID }}" \
+            --targets "Key=tag:Name,Values=CloudEventPipelineServer" \
             --document-name "AWS-RunShellScript" \
             --parameters file://params.json \
             --query "Command.CommandId" \
