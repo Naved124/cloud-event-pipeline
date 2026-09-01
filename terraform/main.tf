@@ -8,7 +8,7 @@ terraform {
 }
 #
 provider "aws" {
-  region = "ap-south-1" 
+  region = "us-east-1" 
 }
 
 variable "my_ip" {
