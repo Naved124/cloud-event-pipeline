@@ -34,22 +34,26 @@ jobs:
             ]
           }
           EOF
-          aws ssm send-command \
-            --targets "Key=tag:Name,Values=CloudEventPipelineServer" \
-            --document-name "AWS-RunShellScript" \
-            --parameters file://params.json \
-            --output text
-            # Capture the resulting CommandId
+          
+          # 1. Send the command using the tag and capture the Command ID
           COMMAND_ID=$(aws ssm send-command \
-            --instance-ids "${{ secrets.EC2_INSTANCE_ID }}" \
+            --targets "Key=tag:Name,Values=CloudEventPipelineServer" \
             --document-name "AWS-RunShellScript" \
             --parameters file://params.json \
             --query "Command.CommandId" \
             --output text)
             
-          echo "Waiting for command $COMMAND_ID to finish execution on the server..."
+          echo "Command queued with ID: $COMMAND_ID"
           
-          # Block the pipeline until the server reports Success or Failed
+          # 2. Dynamically fetch the ID of the running instance that has the tag
+          INSTANCE_ID=$(aws ec2 describe-instances \
+            --filters "Name=tag:Name,Values=CloudEventPipelineServer" "Name=instance-state-name,Values=running" \
+            --query "Reservations[0].Instances[0].InstanceId" \
+            --output text)
+            
+          echo "Waiting for execution on instance: $INSTANCE_ID..."
+          
+          # 3. Block the pipeline until the server reports Success or Failed
           aws ssm wait command-executed \
             --command-id "$COMMAND_ID" \
-            --instance-id "${{ secrets.EC2_INSTANCE_ID }}"
+            --instance-id "$INSTANCE_ID"
