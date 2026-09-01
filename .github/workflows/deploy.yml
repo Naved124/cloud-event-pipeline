@@ -35,43 +35,8 @@ jobs:
           }
           EOF
           
-          COMMAND_ID=$(aws ssm send-command \
+          aws ssm send-command \
             --targets "Key=tag:Name,Values=CloudEventPipelineServer" \
             --document-name "AWS-RunShellScript" \
             --parameters file://params.json \
-            --query "Command.CommandId" \
-            --output text)
-            
-          echo "Command queued with ID: $COMMAND_ID"
-          
-          # Wait 5 seconds to ensure AWS registers the instance state
-          sleep 5 
-          
-          INSTANCE_ID=$(aws ec2 describe-instances \
-            --filters "Name=tag:Name,Values=CloudEventPipelineServer" "Name=instance-state-name,Values=running" \
-            --query "Reservations[0].Instances[0].InstanceId" \
-            --output text)
-            
-          # Safety check to prevent the 'None' regex crash
-          if [ "$INSTANCE_ID" == "None" ] || [ -z "$INSTANCE_ID" ]; then
-            echo "Error: No running instance found with tag Name=CloudEventPipelineServer."
-            echo "Did you run 'terraform apply'?"
-            exit 1
-          fi
-            
-          echo "Waiting for execution on instance: $INSTANCE_ID..."
-          
-          aws ssm wait command-executed \
-            --command-id "$COMMAND_ID" \
-            --instance-id "$INSTANCE_ID"
-
-            # logs
-          if [ $? -ne 0 ]; then
-            echo "Deployment failed! Printing remote execution logs:"
-            aws ssm get-command-invocation \
-              --command-id "$COMMAND_ID" \
-              --instance-id "$INSTANCE_ID" \
-              --query "StandardErrorContent" \
-              --output text
-            exit 1
-          fi
+            --output text
