@@ -12,27 +12,30 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Transfer Files to EC2
-        uses: appleboy/scp-action@v0.1.4
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
         with:
-          host: ${{ secrets.EC2_HOST }}
-          username: ${{ secrets.EC2_USERNAME }}
-          key: ${{ secrets.EC2_SSH_KEY }}
-          source: "."
-          target: "/home/ubuntu/cloud-event-pipeline"
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
 
-      - name: Rebuild and Start Containers
-        uses: appleboy/ssh-action@v1.0.3
-        with:
-          host: ${{ secrets.EC2_HOST }}
-          username: ${{ secrets.EC2_USERNAME }}
-          key: ${{ secrets.EC2_SSH_KEY }}
-          script: |
-            cd /home/ubuntu/cloud-event-pipeline
-            cat > .env << EOF
-            DB_USER=${{ secrets.DB_USER }}
-            DB_PASSWORD=${{ secrets.DB_PASSWORD }}
-            DB_NAME=${{ secrets.DB_NAME }}
-            EOF
-            sudo docker compose down
-            sudo docker compose up -d --build
+      - name: Deploy via AWS SSM
+        run: |
+          cat > params.json << 'EOF'
+          {
+            "commands": [
+              "which git || (apt-get update -y && apt-get install -y git)",
+              "if [ -d /home/ubuntu/cloud-event-pipeline ]; then cd /home/ubuntu/cloud-event-pipeline && git pull; else git clone https://github.com/Naved124/cloud-event-pipeline.git /home/ubuntu/cloud-event-pipeline; fi",
+              "echo DB_USER=${{ secrets.DB_USER }} > /home/ubuntu/cloud-event-pipeline/.env",
+              "echo DB_PASSWORD=${{ secrets.DB_PASSWORD }} >> /home/ubuntu/cloud-event-pipeline/.env",
+              "echo DB_NAME=${{ secrets.DB_NAME }} >> /home/ubuntu/cloud-event-pipeline/.env",
+              "docker compose -f /home/ubuntu/cloud-event-pipeline/docker-compose.yml down",
+              "docker compose -f /home/ubuntu/cloud-event-pipeline/docker-compose.yml up -d --build"
+            ]
+          }
+          EOF
+          aws ssm send-command \
+            --instance-ids "${{ secrets.EC2_INSTANCE_ID }}" \
+            --document-name "AWS-RunShellScript" \
+            --parameters file://params.json \
+            --output text
