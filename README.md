@@ -55,3 +55,12 @@ Database credentials (`DB_USER`, `DB_PASSWORD`, `DB_NAME`) are stored as GitHub 
 ## Local Development
 
 Create a `.env` file in the project root (not committed — see `.gitignore`):
+DB_USER=appuser
+DB_PASSWORD=your-local-password
+DB_NAME=eventdb
+
+Then:
+```bash
+docker compose up --build
+```
+Check `http://localhost:8080/health` — should report `"database": "connected"`.
