@@ -1,0 +1,552 @@
+This file is a merged representation of the entire codebase, combined into a single document by Repomix.
+
+<file_summary>
+This section contains a summary of this file.
+
+<purpose>
+This file contains a packed representation of the entire repository's contents.
+It is designed to be easily consumable by AI systems for analysis, code review,
+or other automated processes.
+</purpose>
+
+<file_format>
+The content is organized as follows:
+1. This summary section
+2. Repository information
+3. Directory structure
+4. Repository files (if enabled)
+5. Multiple file entries, each consisting of:
+  - File path as an attribute
+  - Full contents of the file
+</file_format>
+
+<usage_guidelines>
+- This file should be treated as read-only. Any changes should be made to the
+  original repository files, not this packed version.
+- When processing this file, use the file path to distinguish
+  between different files in the repository.
+- Be aware that this file may contain sensitive information. Handle it with
+  the same level of security as you would the original repository.
+</usage_guidelines>
+
+<notes>
+- Some files may have been excluded based on .gitignore rules and Repomix's configuration
+- Binary files are not included in this packed representation. Please refer to the Repository Structure section for a complete list of file paths, including binary files
+- Files matching patterns in .gitignore are excluded
+- Files matching default ignore patterns are excluded
+- Files are sorted by Git change count (files with more changes are at the bottom)
+</notes>
+
+</file_summary>
+
+<directory_structure>
+.github/
+  workflows/
+    deploy.yml
+terraform/
+  main.tf
+.gitignore
+docker-compose.yml
+Dockerfile
+go.mod
+main.go
+README.md
+</directory_structure>
+
+<files>
+This section contains the contents of the repository's files.
+
+<file path="Dockerfile">
+#Stage 1: building the binary
+FROM golang:1.23-alpine AS builder
+
+WORKDIR /app
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+RUN CGO_ENABLED=0 GOOS=linux go build -o server .
+
+#stage 2: minimal runtime environment
+FROM alpine:3.24
+
+WORKDIR /root/
+COPY --from=builder /app/server .
+EXPOSE 8080
+
+CMD ["./server"]
+</file>
+
+<file path="go.mod">
+module github.com/Naved124/cloud-event-pipeline
+
+go 1.23.0
+
+require github.com/lib/pq v1.12.3
+</file>
+
+<file path="main.go">
+package main
+
+import (
+	"database/sql"
+	"encoding/json"
+	"fmt"
+	"log"
+	"net/http"
+	"os"
+	"time"
+
+	_ "github.com/lib/pq"
+)
+
+type Event struct {
+	ID        int       `json:"id"`
+	Payload   string    `json:"payload"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+var db *sql.DB
+
+func initDB() {
+	dbHost := os.Getenv("DB_HOST")
+	dbUser := os.Getenv("DB_USER")
+	dbPassword := os.Getenv("DB_PASSWORD")
+	dbName := os.Getenv("DB_NAME")
+	dbPort := os.Getenv("DB_PORT")
+
+	if dbHost == "" {
+		dbHost = "postgres"
+	}
+	if dbPort == "" {
+		dbPort = "5432"
+	}
+
+	connStr := fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=%s sslmode=disable",
+		dbHost, dbPort, dbUser, dbPassword, dbName)
+
+	var err error
+	for i := 0; i < 10; i++ {
+		db, err = sql.Open("postgres", connStr)
+		if err == nil && db.Ping() == nil {
+			log.Println("Connected to PostgreSQL successfully.")
+			break
+		}
+		log.Printf("Waiting for database connection (attempt %d/10)...", i+1)
+		time.Sleep(2 * time.Second)
+	}
+
+	if db != nil {
+		query := `CREATE TABLE IF NOT EXISTS events (
+			id SERIAL PRIMARY KEY,
+			payload TEXT NOT NULL,
+			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+		);`
+		db.Exec(query)
+	}
+}
+
+func healthHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	dbStatus := "connected"
+	if db == nil || db.Ping() != nil {
+		dbStatus = "disconnected"
+	}
+
+	json.NewEncoder(w).Encode(map[string]string{
+		"status":   "healthy",
+		"database": dbStatus,
+	})
+}
+
+func eventsHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	if r.Method == http.MethodPost {
+		var req struct {
+			Payload string `json:"payload"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Payload == "" {
+			http.Error(w, `{"error":"Invalid payload"}`, http.StatusBadRequest)
+			return
+		}
+
+		var id int
+		err := db.QueryRow("INSERT INTO events (payload) VALUES ($1) RETURNING id", req.Payload).Scan(&id)
+		if err != nil {
+			http.Error(w, `{"error":"Database write error"}`, http.StatusInternalServerError)
+			return
+		}
+
+		w.WriteHeader(http.StatusCreated)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"message": "Event recorded",
+			"id":      id,
+		})
+		return
+	}
+
+	if r.Method == http.MethodGet {
+		rows, err := db.Query("SELECT id, payload, created_at FROM events ORDER BY id DESC LIMIT 10")
+		if err != nil {
+			http.Error(w, `{"error":"Database read error"}`, http.StatusInternalServerError)
+			return
+		}
+		defer rows.Close()
+
+		var events []Event
+		for rows.Next() {
+			var e Event
+			if err := rows.Scan(&e.ID, &e.Payload, &e.CreatedAt); err == nil {
+				events = append(events, e)
+			}
+		}
+
+		json.NewEncoder(w).Encode(events)
+		return
+	}
+
+	http.Error(w, `{"error":"Method not allowed"}`, http.StatusMethodNotAllowed)
+}
+
+func main() {
+	initDB()
+
+	http.HandleFunc("/health", healthHandler)
+	http.HandleFunc("/events", eventsHandler)
+
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8080"
+	}
+
+	log.Printf("Server running on port %s", port)
+	log.Fatal(http.ListenAndServe(":"+port, nil))
+}
+</file>
+
+<file path=".gitignore">
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.backup
+.terraform.lock.hcl
+
+# OS & Build
+server
+.env
+terraform.tfvars
+</file>
+
+<file path="docker-compose.yml">
+services:
+  api:
+    build: .
+    ports:
+      - "8080:8080"
+    environment:
+      - DB_HOST=postgres
+      - DB_USER=${DB_USER}
+      - DB_PASSWORD=${DB_PASSWORD}
+      - DB_NAME=${DB_NAME}
+      - DB_PORT=5432
+    depends_on:
+      postgres:
+        condition: service_started
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      - POSTGRES_USER=${DB_USER}
+      - POSTGRES_PASSWORD=${DB_PASSWORD}
+      - POSTGRES_DB=${DB_NAME}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+volumes:
+  pgdata:
+</file>
+
+<file path="README.md">
+# Cloud Event Pipeline & Server Health Logger
+
+A production-grade, containerized Go backend integrated with a PostgreSQL database, automatically provisioned on AWS via Infrastructure as Code (IaC), and deployed through a continuous deployment (CD) pipeline.
+
+---
+
+## Architecture & Tech Stack
+
+* **Backend & API:** Go (Golang), standard library REST routing
+* **Database:** PostgreSQL (containerized with volume persistence)
+* **Containerization:** Docker & Docker Compose (multi-container orchestration)
+* **Infrastructure as Code (IaC):** Terraform (AWS EC2 `t3.micro`, Security Groups, IAM Role/Instance Profile, Key Pair) — provisioned in `ap-south-1`
+* **CI/CD Automation:** GitHub Actions with AWS Systems Manager (SSM) Run Command — pushes trigger a tag-targeted deploy with no inbound SSH required
+* **Cloud Provider:** AWS
+
+---
+
+## Project Structure
+
+```text
+cloud-event-pipeline/
+├── .github/
+│   └── workflows/
+│       └── deploy.yml       # GitHub Actions CD pipeline (SSM-based)
+├── terraform/
+│   └── main.tf              # AWS infrastructure blueprint
+├── Dockerfile               # Multi-stage build for Go API
+├── docker-compose.yml       # Multi-container service stack (API + DB)
+├── go.mod                   # Go module dependencies
+├── main.go                  # REST API implementation & DB logic
+└── .gitignore                # Excludes local state, secrets, and binary caches
+```
+
+---
+
+## Deployment Architecture: Decisions & Reasoning
+
+**Why AWS Systems Manager instead of direct SSH.**
+The pipeline originally deployed via SCP + SSH from GitHub Actions. After locking the EC2 security group's SSH access down to a single trusted IP — a deliberate hardening step — GitHub's hosted runners (which use rotating IPs) could no longer reach the instance, breaking deploys.
+
+Rather than reopening SSH to the world, the deploy mechanism was switched to AWS Systems Manager (SSM) Run Command. GitHub Actions authenticates to AWS via a narrowly-scoped IAM user, and the instance's own IAM role lets its pre-installed SSM agent pull the latest code and redeploy containers — no inbound SSH involved. Port 22 stays locked to a single IP for manual debugging access only; it is no longer required for CI/CD to function.
+
+**Why the deploy targets by tag, not instance ID.**
+The SSM command targets `Key=tag:Name,Values=CloudEventPipelineServer` rather than a hardcoded instance ID. This means the pipeline keeps working automatically even if the underlying EC2 instance is destroyed and recreated (e.g. during infrastructure iteration) — no secrets need updating afterward, as long as the new instance carries the same tag. The IAM policy is scoped the same way, using a `ssm:resourceTag/Name` condition instead of a fixed instance ARN.
+
+**Secrets management.**
+Database credentials (`DB_USER`, `DB_PASSWORD`, `DB_NAME`) are stored as GitHub Actions secrets and injected into a `.env` file on the instance at deploy time — never committed to version control. Locally, the same three variables live in a gitignored `.env` file in the project root.
+
+**Other hardening decisions.**
+- PostgreSQL's port is not published to the host — the API reaches it only over Docker's internal network.
+- The EC2 key pair's public key is read dynamically via Terraform's `file()` function rather than hardcoded, so rotating keys never requires editing `main.tf`.
+
+---
+
+## Local Development
+
+Create a `.env` file in the project root (not committed — see `.gitignore`):
+DB_USER=appuser
+DB_PASSWORD=your-local-password
+DB_NAME=eventdb
+
+Then:
+```bash
+docker compose up --build
+```
+Check `http://localhost:8080/health` — should report `"database": "connected"`
+</file>
+
+<file path="terraform/main.tf">
+terraform {
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 5.0"
+    }
+  }
+}
+
+provider "aws" {
+  region = "ap-south-1" 
+}
+
+variable "my_ip" {
+  description = "Your public IP in CIDR format, for SSH access"
+  type        = string
+}
+
+data "aws_ami" "ubuntu" {
+  most_recent = true
+  owners      = ["099720109477"] # Canonical
+  filter {
+    name   = "name"
+    values = ["ubuntu/images/hvm-ssd/ubuntu-jammy-22.04-amd64-server-*"]
+  }
+}
+
+resource "aws_security_group" "web_sg" {
+  name        = "event-pipeline-sg"
+  description = "Allow SSH and HTTP"
+
+  ingress {
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = [var.my_ip]
+  }
+
+  ingress {
+    from_port   = 8080
+    to_port     = 8080
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+}
+
+resource "aws_key_pair" "deployer" {
+  key_name   = "cloud-event-key"
+  public_key = file("~/.ssh/cloud_event_key.pub")
+}
+
+resource "aws_iam_role" "ssm_role" {
+  name = "cloud-event-ssm-role"
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Action    = "sts:AssumeRole"
+      Effect    = "Allow"
+      Principal = { Service = "ec2.amazonaws.com" }
+    }]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "ssm_policy" {
+  role       = aws_iam_role.ssm_role.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+}
+
+resource "aws_iam_instance_profile" "ssm_profile" {
+  name = "cloud-event-ssm-profile"
+  role = aws_iam_role.ssm_role.name
+}
+
+resource "aws_instance" "web_server" {
+  ami                    = data.aws_ami.ubuntu.id
+  instance_type          = "t3.micro"
+  key_name               = aws_key_pair.deployer.key_name
+  vpc_security_group_ids = [aws_security_group.web_sg.id]
+  iam_instance_profile   = aws_iam_instance_profile.ssm_profile.name
+
+  user_data = <<-EOF
+              #!/bin/bash
+              apt-get update -y
+              apt-get install -y docker.io docker-compose-v2 git
+              systemctl start docker
+              systemctl enable docker
+              usermod -aG docker ubuntu
+              EOF
+
+  tags = {
+    Name = "CloudEventPipelineServer"
+  }
+}
+
+output "instance_public_ip" {
+  value = aws_instance.web_server.public_ip
+}
+
+output "instance_id" {
+  value = aws_instance.web_server.id
+}
+</file>
+
+<file path=".github/workflows/deploy.yml">
+name: Deploy Pipeline to AWS
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ap-south-1
+
+      - name: Resolve current instance and wait for SSM readiness
+        run: |
+          INSTANCE_ID=$(aws ec2 describe-instances \
+            --filters "Name=tag:Name,Values=CloudEventPipelineServer" "Name=instance-state-name,Values=running" \
+            --query "Reservations[0].Instances[0].InstanceId" \
+            --output text)
+          echo "Resolved instance: $INSTANCE_ID"
+          echo "INSTANCE_ID=$INSTANCE_ID" >> "$GITHUB_ENV"
+
+          for i in $(seq 1 20); do
+            STATUS=$(aws ssm describe-instance-information \
+              --filters "Key=InstanceIds,Values=$INSTANCE_ID" \
+              --query "InstanceInformationList[0].PingStatus" \
+              --output text 2>/dev/null)
+            if [ "$STATUS" == "Online" ]; then
+              echo "Instance is online in SSM."
+              exit 0
+            fi
+            echo "Not ready yet ($STATUS), waiting 15s... (attempt $i/20)"
+            sleep 15
+          done
+          echo "Instance never registered with SSM after 5 minutes."
+          exit 1
+
+      - name: Deploy via AWS SSM
+        run: |
+          cat > params.json << 'EOF'
+          {
+            "commands": [
+              "which git || (apt-get update -y && apt-get install -y git)",
+              "if [ -d /home/ubuntu/cloud-event-pipeline ]; then cd /home/ubuntu/cloud-event-pipeline && git pull; else git clone https://github.com/Naved124/cloud-event-pipeline.git /home/ubuntu/cloud-event-pipeline; fi",
+              "echo DB_USER=${{ secrets.DB_USER }} > /home/ubuntu/cloud-event-pipeline/.env",
+              "echo DB_PASSWORD=${{ secrets.DB_PASSWORD }} >> /home/ubuntu/cloud-event-pipeline/.env",
+              "echo DB_NAME=${{ secrets.DB_NAME }} >> /home/ubuntu/cloud-event-pipeline/.env",
+              "docker compose -f /home/ubuntu/cloud-event-pipeline/docker-compose.yml down",
+              "docker compose -f /home/ubuntu/cloud-event-pipeline/docker-compose.yml up -d --build"
+            ]
+          }
+          EOF
+
+          COMMAND_ID=$(aws ssm send-command \
+            --instance-ids "$INSTANCE_ID" \
+            --document-name "AWS-RunShellScript" \
+            --parameters file://params.json \
+            --query "Command.CommandId" \
+            --output text)
+          echo "Dispatched command: $COMMAND_ID"
+          echo "COMMAND_ID=$COMMAND_ID" >> "$GITHUB_ENV"
+
+          aws ssm wait command-executed \
+            --command-id "$COMMAND_ID" \
+            --instance-id "$INSTANCE_ID"
+
+      - name: Print deploy command output
+        if: always()
+        run: |
+          aws ssm get-command-invocation \
+            --command-id "$COMMAND_ID" \
+            --instance-id "$INSTANCE_ID" \
+            --output text
+
+      - name: Verify the app is actually healthy
+        run: |
+          INSTANCE_IP=$(aws ec2 describe-instances \
+            --filters "Name=tag:Name,Values=CloudEventPipelineServer" "Name=instance-state-name,Values=running" \
+            --query "Reservations[0].Instances[0].PublicIpAddress" \
+            --output text)
+          echo "Checking health at $INSTANCE_IP..."
+          for i in $(seq 1 10); do
+            if curl -sf "http://$INSTANCE_IP:8080/health"; then
+              echo "Health check passed."
+              exit 0
+            fi
+            echo "Not ready yet, retrying in 10s... (attempt $i/10)"
+            sleep 10
+          done
+          echo "Health check failed after all retries."
+          exit 1
+</file>
+
+</files>
