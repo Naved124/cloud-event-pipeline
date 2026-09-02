@@ -63,4 +63,4 @@ Then:
 ```bash
 docker compose up --build
 ```
-Check `http://localhost:8080/health` — should report `"database": "connected"`.
+Check `http://localhost:8080/health` — should report `"database": "connected"`
