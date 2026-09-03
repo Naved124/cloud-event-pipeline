@@ -48,16 +48,37 @@ jobs:
           COMMAND_ID=$(aws ssm send-command \
             --instance-ids "$INSTANCE_ID" \
             --document-name "AWS-RunShellScript" \
-            --parameters '{"commands":["cloud-init status --wait"]}' \
+            --parameters '{"commands":["cloud-init status --wait --long"]}' \
             --query "Command.CommandId" \
             --output text)
           echo "Dispatched cloud-init wait command: $COMMAND_ID"
 
-          aws ssm wait command-executed \
-            --command-id "$COMMAND_ID" \
-            --instance-id "$INSTANCE_ID"
+          for i in $(seq 1 20); do
+            STATUS=$(aws ssm get-command-invocation \
+              --command-id "$COMMAND_ID" --instance-id "$INSTANCE_ID" \
+              --query "Status" --output text 2>/dev/null)
+            case "$STATUS" in
+              Success|Failed|Cancelled|TimedOut) break ;;
+              *) echo "Still waiting ($i/20, status: ${STATUS:-none yet})..."; sleep 15 ;;
+            esac
+          done
 
-          echo "cloud-init finished — Docker and AWS CLI installation are complete."
+          echo "--- cloud-init output ---"
+          aws ssm get-command-invocation \
+            --command-id "$COMMAND_ID" --instance-id "$INSTANCE_ID" \
+            --query "StandardOutputContent" --output text
+
+          CI_EXIT=$(aws ssm get-command-invocation \
+            --command-id "$COMMAND_ID" --instance-id "$INSTANCE_ID" \
+            --query "ResponseCode" --output text)
+          echo "cloud-init exit code: $CI_EXIT"
+
+          if [ "$CI_EXIT" == "1" ]; then
+            echo "cloud-init crashed (unrecoverable) — failing the deploy."
+            exit 1
+          fi
+
+          echo "cloud-init finished — proceeding (2 = completed with a non-fatal warning, see output above)."
 
       - name: Deploy via AWS SSM
         run: |
@@ -92,6 +113,10 @@ jobs:
       - name: Print deploy command output
         if: always()
         run: |
+          if [ -z "$COMMAND_ID" ]; then
+            echo "Deploy command was never dispatched (an earlier step failed) — nothing to print."
+            exit 0
+          fi
           aws ssm get-command-invocation \
             --command-id "$COMMAND_ID" \
             --instance-id "$INSTANCE_ID" \

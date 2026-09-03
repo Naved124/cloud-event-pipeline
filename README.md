@@ -33,6 +33,18 @@ cloud-event-pipeline/
 
 ---
 
+## Deployment Pipeline
+
+Every push to `main` triggers `.github/workflows/deploy.yml`, which runs entirely over AWS Systems Manager — no SSH involved:
+
+1. **Resolve the instance & wait for SSM.** Finds the running EC2 instance by its `CloudEventPipelineServer` tag and polls (up to 5 minutes) until its SSM agent reports `Online`.
+2. **Wait for provisioning to finish.** Polls `cloud-init status --wait --long` on the instance until it reaches a terminal state. Only a genuine crash (`ResponseCode 1`) fails the deploy — a `2` (cloud-init finished but logged a recoverable warning) is treated as non-fatal — and the full status output is always printed to the Action log for visibility.
+3. **Deploy via SSM.** Pulls the latest code (`git clone` / `git pull`), fetches `DB_USER`, `DB_PASSWORD`, `DB_NAME`, and `API_KEY` from SSM Parameter Store directly on the instance, writes them to `.env`, then runs `docker compose down` followed by `docker compose up -d --build`.
+4. **Print the deploy output.** Surfaces the SSM command's stdout/stderr in the Action log regardless of outcome, so a failed deploy is debuggable from the log alone.
+5. **Verify health.** Polls `http://<instance-ip>:8080/health` for up to ~100 seconds and fails the run if the API never reports healthy.
+
+---
+
 ## Deployment Architecture: Decisions & Reasoning
 
 **Why AWS Systems Manager instead of direct SSH.**
@@ -42,6 +54,9 @@ Rather than reopening SSH to the world, the deploy mechanism was switched to AWS
 
 **Why the deploy targets by tag, not instance ID.**
 The SSM command targets `Key=tag:Name,Values=CloudEventPipelineServer` rather than a hardcoded instance ID. This means the pipeline keeps working automatically even if the underlying EC2 instance is destroyed and recreated (e.g. during infrastructure iteration) — no secrets need updating afterward, as long as the new instance carries the same tag. The IAM policy is scoped the same way, using a `ssm:resourceTag/Name` condition instead of a fixed instance ARN.
+
+**Why the provisioning check distinguishes crashes from warnings.**
+`cloud-init status` changed its exit codes in v23.4: `0` for a clean run, `1` for an unrecoverable crash, and `2` for a run that completed but logged a recoverable warning — often from something unrelated to this project's own `user_data` script. An earlier version of the pipeline treated any non-zero exit as fatal, which failed deploys on cosmetic warnings even though Docker, git, and the AWS CLI had installed correctly. The check now only blocks the deploy on exit code `1`, and always logs the full `cloud-init status --long` output either way, so a genuine failure is still caught while a harmless one doesn't block a release.
 
 **Secrets management.**
 Database credentials (`DB_USER`, `DB_PASSWORD`, `DB_NAME`) and the API key are stored in AWS Systems Manager Parameter Store (`SecureString`, under `/cloud-event-pipeline/*`), not as GitHub Actions secrets. At deploy time, the EC2 instance's IAM role — scoped to `ssm:GetParameter` on that path only — pulls the values itself and writes them into a local `.env` file. This means secret values never appear in the SSM command text sent from GitHub Actions, only parameter *names* do, keeping them out of CloudTrail/SSM command history. Locally, the same variables live in a gitignored `.env` file in the project root.

@@ -8,3 +8,4 @@
 server
 .env
 terraform.tfvars
+repomix-output.xml
