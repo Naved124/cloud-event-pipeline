@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/subtle"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -57,14 +58,18 @@ func initDB() {
 			payload TEXT NOT NULL,
 			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 		);`
-		db.Exec(query)
+		if _, err := db.Exec(query); err != nil {
+			log.Printf("ERROR: failed to create events table: %v", err)
+		}
 	}
 }
 
 func requireAPIKey(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		apiKey := os.Getenv("API_KEY")
-		if apiKey == "" || r.Header.Get("X-API-Key") != apiKey {
+		providedKey := r.Header.Get("X-API-Key")
+
+		if apiKey == "" || subtle.ConstantTimeCompare([]byte(providedKey), []byte(apiKey)) != 1 {
 			http.Error(w, `{"error":"Unauthorized"}`, http.StatusUnauthorized)
 			return
 		}
