@@ -100,17 +100,17 @@ resource "aws_instance" "web_server" {
   iam_instance_profile   = aws_iam_instance_profile.ssm_profile.name
 
   user_data = <<-EOF
-              #!/bin/bash
-              apt-get update -y
-              apt-get install -y docker.io docker-compose-v2 git unzip curl
-              systemctl start docker
-              systemctl enable docker
-              usermod -aG docker ubuntu
+    #!/bin/bash
+    apt-get update -y
+    apt-get install -y docker.io docker-compose-v2 git unzip curl
+    systemctl start docker
+    systemctl enable docker
+    usermod -aG docker ubuntu
 
-              curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
-            unzip awscliv2.zip
-            ./aws/install
-              EOF
+    curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+    unzip awscliv2.zip
+    ./aws/install
+  EOF
 
   tags = {
     Name = "CloudEventPipelineServer"
