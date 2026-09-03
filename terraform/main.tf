@@ -66,6 +66,20 @@ resource "aws_iam_role" "ssm_role" {
       Principal = { Service = "ec2.amazonaws.com" }
     }]
   })
+  
+}
+resource "aws_iam_role_policy" "ssm_parameter_read" {
+  name = "cloud-event-pipeline-ssm-param-read"
+  role = aws_iam_role.ssm_role.name
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = ["ssm:GetParameter", "ssm:GetParameters"]
+      Resource = "arn:aws:ssm:ap-south-1:*:parameter/cloud-event-pipeline/*"
+    }]
+  })
 }
 
 resource "aws_iam_role_policy_attachment" "ssm_policy" {
