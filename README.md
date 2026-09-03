@@ -49,6 +49,8 @@ Database credentials (`DB_USER`, `DB_PASSWORD`, `DB_NAME`) and the API key are s
 **Other hardening decisions.**
 - PostgreSQL's port is not published to the host — the API reaches it only over Docker's internal network.
 - The EC2 key pair's public key is read dynamically via Terraform's `file()` function rather than hardcoded, so rotating keys never requires editing `main.tf`.
+- The `/events` API key check uses `crypto/subtle.ConstantTimeCompare` rather than a plain `!=` string comparison, removing a timing side-channel on the key value.
+- Errors from the startup `CREATE TABLE IF NOT EXISTS` are now logged instead of silently discarded, so a schema-creation failure shows up in the container logs immediately rather than as a confusing `500` on the first `/events` call.
 
 ---
 
