@@ -56,8 +56,29 @@ README.md
 <files>
 This section contains the contents of the repository's files.
 
+<file path="go.mod">
+module github.com/Naved124/cloud-event-pipeline
+
+go 1.23.0
+
+require github.com/lib/pq v1.12.3
+</file>
+
+<file path=".gitignore">
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.backup
+.terraform.lock.hcl
+
+# OS & Build
+server
+.env
+terraform.tfvars
+</file>
+
 <file path="Dockerfile">
-#Stage 1: building the binary
+# Stage 1: building the binary
 FROM golang:1.23-alpine AS builder
 
 WORKDIR /app
@@ -67,34 +88,34 @@ RUN go mod download
 COPY . .
 RUN CGO_ENABLED=0 GOOS=linux go build -o server .
 
-#stage 2: minimal runtime environment
+# Stage 2: minimal runtime environment
 FROM alpine:3.24
 
-WORKDIR /root/
+RUN addgroup -S appgroup && adduser -S appuser -G appgroup
+
+WORKDIR /app
 COPY --from=builder /app/server .
+RUN chown appuser:appgroup /app/server
+
+USER appuser
 EXPOSE 8080
 
 CMD ["./server"]
-</file>
-
-<file path="go.mod">
-module github.com/Naved124/cloud-event-pipeline
-
-go 1.23.0
-
-require github.com/lib/pq v1.12.3
 </file>
 
 <file path="main.go">
 package main
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	_ "github.com/lib/pq"
@@ -146,6 +167,17 @@ func initDB() {
 	}
 }
 
+func requireAPIKey(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		apiKey := os.Getenv("API_KEY")
+		if apiKey == "" || r.Header.Get("X-API-Key") != apiKey {
+			http.Error(w, `{"error":"Unauthorized"}`, http.StatusUnauthorized)
+			return
+		}
+		next(w, r)
+	}
+}
+
 func healthHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	dbStatus := "connected"
@@ -163,6 +195,8 @@ func eventsHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
 	if r.Method == http.MethodPost {
+		r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // 1MB cap
+
 		var req struct {
 			Payload string `json:"payload"`
 		}
@@ -171,8 +205,11 @@ func eventsHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+		defer cancel()
+
 		var id int
-		err := db.QueryRow("INSERT INTO events (payload) VALUES ($1) RETURNING id", req.Payload).Scan(&id)
+		err := db.QueryRowContext(ctx, "INSERT INTO events (payload) VALUES ($1) RETURNING id", req.Payload).Scan(&id)
 		if err != nil {
 			http.Error(w, `{"error":"Database write error"}`, http.StatusInternalServerError)
 			return
@@ -187,7 +224,10 @@ func eventsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if r.Method == http.MethodGet {
-		rows, err := db.Query("SELECT id, payload, created_at FROM events ORDER BY id DESC LIMIT 10")
+		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+		defer cancel()
+
+		rows, err := db.QueryContext(ctx, "SELECT id, payload, created_at FROM events ORDER BY id DESC LIMIT 10")
 		if err != nil {
 			http.Error(w, `{"error":"Database read error"}`, http.StatusInternalServerError)
 			return
@@ -212,30 +252,38 @@ func eventsHandler(w http.ResponseWriter, r *http.Request) {
 func main() {
 	initDB()
 
-	http.HandleFunc("/health", healthHandler)
-	http.HandleFunc("/events", eventsHandler)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/health", healthHandler)
+	mux.HandleFunc("/events", requireAPIKey(eventsHandler))
 
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8080"
 	}
 
-	log.Printf("Server running on port %s", port)
-	log.Fatal(http.ListenAndServe(":"+port, nil))
+	srv := &http.Server{Addr: ":" + port, Handler: mux}
+
+	go func() {
+		log.Printf("Server running on port %s", port)
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("listen: %s", err)
+		}
+	}()
+
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	<-quit
+	log.Println("Shutting down...")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := srv.Shutdown(ctx); err != nil {
+		log.Fatalf("forced shutdown: %v", err)
+	}
+	if db != nil {
+		db.Close()
+	}
 }
-</file>
-
-<file path=".gitignore">
-# Terraform
-.terraform/
-*.tfstate
-*.tfstate.backup
-.terraform.lock.hcl
-
-# OS & Build
-server
-.env
-terraform.tfvars
 </file>
 
 <file path="docker-compose.yml">
@@ -250,9 +298,10 @@ services:
       - DB_PASSWORD=${DB_PASSWORD}
       - DB_NAME=${DB_NAME}
       - DB_PORT=5432
+      - API_KEY=${API_KEY}
     depends_on:
       postgres:
-        condition: service_started
+        condition: service_healthy
 
   postgres:
     image: postgres:16-alpine
@@ -262,6 +311,11 @@ services:
       - POSTGRES_DB=${DB_NAME}
     volumes:
       - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
 
 volumes:
   pgdata:
@@ -271,7 +325,7 @@ volumes:
 # Cloud Event Pipeline & Server Health Logger
 
 A production-grade, containerized Go backend integrated with a PostgreSQL database, automatically provisioned on AWS via Infrastructure as Code (IaC), and deployed through a continuous deployment (CD) pipeline.
-
+> This project's focus is infrastructure and deployment automation — Docker, Terraform, CI/CD, and secrets handling — rather than application features. The API itself is intentionally minimal (health check + a simple events table).
 ---
 
 ## Architecture & Tech Stack
@@ -314,7 +368,7 @@ Rather than reopening SSH to the world, the deploy mechanism was switched to AWS
 The SSM command targets `Key=tag:Name,Values=CloudEventPipelineServer` rather than a hardcoded instance ID. This means the pipeline keeps working automatically even if the underlying EC2 instance is destroyed and recreated (e.g. during infrastructure iteration) — no secrets need updating afterward, as long as the new instance carries the same tag. The IAM policy is scoped the same way, using a `ssm:resourceTag/Name` condition instead of a fixed instance ARN.
 
 **Secrets management.**
-Database credentials (`DB_USER`, `DB_PASSWORD`, `DB_NAME`) are stored as GitHub Actions secrets and injected into a `.env` file on the instance at deploy time — never committed to version control. Locally, the same three variables live in a gitignored `.env` file in the project root.
+Database credentials (`DB_USER`, `DB_PASSWORD`, `DB_NAME`) and the API key are stored in AWS Systems Manager Parameter Store (`SecureString`, under `/cloud-event-pipeline/*`), not as GitHub Actions secrets. At deploy time, the EC2 instance's IAM role — scoped to `ssm:GetParameter` on that path only — pulls the values itself and writes them into a local `.env` file. This means secret values never appear in the SSM command text sent from GitHub Actions, only parameter *names* do, keeping them out of CloudTrail/SSM command history. Locally, the same variables live in a gitignored `.env` file in the project root.
 
 **Other hardening decisions.**
 - PostgreSQL's port is not published to the host — the API reaches it only over Docker's internal network.
@@ -325,15 +379,27 @@ Database credentials (`DB_USER`, `DB_PASSWORD`, `DB_NAME`) are stored as GitHub 
 ## Local Development
 
 Create a `.env` file in the project root (not committed — see `.gitignore`):
+
 DB_USER=appuser
 DB_PASSWORD=your-local-password
 DB_NAME=eventdb
+API_KEY=your-local-api-key
+
+Generate an API key with `openssl rand -hex 32`.
 
 Then:
 ```bash
 docker compose up --build
 ```
-Check `http://localhost:8080/health` — should report `"database": "connected"`
+Check `http://localhost:8080/health` — should report `"database": "connected"`.
+
+`/events` requires an API key:
+```bash
+curl -H "X-API-Key: your-local-api-key" http://localhost:8080/events
+
+curl -X POST -H "X-API-Key: your-local-api-key" -H "Content-Type: application/json" \
+  -d '{"payload":"hello"}' http://localhost:8080/events
+```
 </file>
 
 <file path="terraform/main.tf">
@@ -403,6 +469,20 @@ resource "aws_iam_role" "ssm_role" {
       Action    = "sts:AssumeRole"
       Effect    = "Allow"
       Principal = { Service = "ec2.amazonaws.com" }
+    }]
+  })
+  
+}
+resource "aws_iam_role_policy" "ssm_parameter_read" {
+  name = "cloud-event-pipeline-ssm-param-read"
+  role = aws_iam_role.ssm_role.name
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = ["ssm:GetParameter", "ssm:GetParameters"]
+      Resource = "arn:aws:ssm:ap-south-1:*:parameter/cloud-event-pipeline/*"
     }]
   })
 }
@@ -500,9 +580,10 @@ jobs:
             "commands": [
               "which git || (apt-get update -y && apt-get install -y git)",
               "if [ -d /home/ubuntu/cloud-event-pipeline ]; then cd /home/ubuntu/cloud-event-pipeline && git pull; else git clone https://github.com/Naved124/cloud-event-pipeline.git /home/ubuntu/cloud-event-pipeline; fi",
-              "echo DB_USER=${{ secrets.DB_USER }} > /home/ubuntu/cloud-event-pipeline/.env",
-              "echo DB_PASSWORD=${{ secrets.DB_PASSWORD }} >> /home/ubuntu/cloud-event-pipeline/.env",
-              "echo DB_NAME=${{ secrets.DB_NAME }} >> /home/ubuntu/cloud-event-pipeline/.env",
+              "cd /home/ubuntu/cloud-event-pipeline && DB_USER=$(aws ssm get-parameter --name /cloud-event-pipeline/DB_USER --query Parameter.Value --output text --region ap-south-1) && echo DB_USER=$DB_USER > .env",
+              "cd /home/ubuntu/cloud-event-pipeline && DB_PASSWORD=$(aws ssm get-parameter --name /cloud-event-pipeline/DB_PASSWORD --with-decryption --query Parameter.Value --output text --region ap-south-1) && echo DB_PASSWORD=$DB_PASSWORD >> .env",
+              "cd /home/ubuntu/cloud-event-pipeline && DB_NAME=$(aws ssm get-parameter --name /cloud-event-pipeline/DB_NAME --with-decryption --query Parameter.Value --output text --region ap-south-1) && echo DB_NAME=$DB_NAME >> .env",
+              "cd /home/ubuntu/cloud-event-pipeline && API_KEY=$(aws ssm get-parameter --name /cloud-event-pipeline/API_KEY --with-decryption --query Parameter.Value --output text --region ap-south-1) && echo API_KEY=$API_KEY >> .env",
               "docker compose -f /home/ubuntu/cloud-event-pipeline/docker-compose.yml down",
               "docker compose -f /home/ubuntu/cloud-event-pipeline/docker-compose.yml up -d --build"
             ]

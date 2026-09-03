@@ -50,9 +50,10 @@ jobs:
             "commands": [
               "which git || (apt-get update -y && apt-get install -y git)",
               "if [ -d /home/ubuntu/cloud-event-pipeline ]; then cd /home/ubuntu/cloud-event-pipeline && git pull; else git clone https://github.com/Naved124/cloud-event-pipeline.git /home/ubuntu/cloud-event-pipeline; fi",
-              "echo DB_USER=${{ secrets.DB_USER }} > /home/ubuntu/cloud-event-pipeline/.env",
-              "echo DB_PASSWORD=${{ secrets.DB_PASSWORD }} >> /home/ubuntu/cloud-event-pipeline/.env",
-              "echo DB_NAME=${{ secrets.DB_NAME }} >> /home/ubuntu/cloud-event-pipeline/.env",
+              "cd /home/ubuntu/cloud-event-pipeline && DB_USER=$(aws ssm get-parameter --name /cloud-event-pipeline/DB_USER --query Parameter.Value --output text --region ap-south-1) && echo DB_USER=$DB_USER > .env",
+              "cd /home/ubuntu/cloud-event-pipeline && DB_PASSWORD=$(aws ssm get-parameter --name /cloud-event-pipeline/DB_PASSWORD --with-decryption --query Parameter.Value --output text --region ap-south-1) && echo DB_PASSWORD=$DB_PASSWORD >> .env",
+              "cd /home/ubuntu/cloud-event-pipeline && DB_NAME=$(aws ssm get-parameter --name /cloud-event-pipeline/DB_NAME --with-decryption --query Parameter.Value --output text --region ap-south-1) && echo DB_NAME=$DB_NAME >> .env",
+              "cd /home/ubuntu/cloud-event-pipeline && API_KEY=$(aws ssm get-parameter --name /cloud-event-pipeline/API_KEY --with-decryption --query Parameter.Value --output text --region ap-south-1) && echo API_KEY=$API_KEY >> .env",
               "docker compose -f /home/ubuntu/cloud-event-pipeline/docker-compose.yml down",
               "docker compose -f /home/ubuntu/cloud-event-pipeline/docker-compose.yml up -d --build"
             ]
@@ -97,3 +98,4 @@ jobs:
           done
           echo "Health check failed after all retries."
           exit 1
+          
