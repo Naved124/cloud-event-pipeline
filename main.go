@@ -1,12 +1,15 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	_ "github.com/lib/pq"
@@ -58,6 +61,17 @@ func initDB() {
 	}
 }
 
+func requireAPIKey(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		apiKey := os.Getenv("API_KEY")
+		if apiKey == "" || r.Header.Get("X-API-Key") != apiKey {
+			http.Error(w, `{"error":"Unauthorized"}`, http.StatusUnauthorized)
+			return
+		}
+		next(w, r)
+	}
+}
+
 func healthHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	dbStatus := "connected"
@@ -75,6 +89,8 @@ func eventsHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
 	if r.Method == http.MethodPost {
+		r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // 1MB cap
+
 		var req struct {
 			Payload string `json:"payload"`
 		}
@@ -83,8 +99,11 @@ func eventsHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+		defer cancel()
+
 		var id int
-		err := db.QueryRow("INSERT INTO events (payload) VALUES ($1) RETURNING id", req.Payload).Scan(&id)
+		err := db.QueryRowContext(ctx, "INSERT INTO events (payload) VALUES ($1) RETURNING id", req.Payload).Scan(&id)
 		if err != nil {
 			http.Error(w, `{"error":"Database write error"}`, http.StatusInternalServerError)
 			return
@@ -99,7 +118,10 @@ func eventsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if r.Method == http.MethodGet {
-		rows, err := db.Query("SELECT id, payload, created_at FROM events ORDER BY id DESC LIMIT 10")
+		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+		defer cancel()
+
+		rows, err := db.QueryContext(ctx, "SELECT id, payload, created_at FROM events ORDER BY id DESC LIMIT 10")
 		if err != nil {
 			http.Error(w, `{"error":"Database read error"}`, http.StatusInternalServerError)
 			return
@@ -124,14 +146,35 @@ func eventsHandler(w http.ResponseWriter, r *http.Request) {
 func main() {
 	initDB()
 
-	http.HandleFunc("/health", healthHandler)
-	http.HandleFunc("/events", eventsHandler)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/health", healthHandler)
+	mux.HandleFunc("/events", requireAPIKey(eventsHandler))
 
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8080"
 	}
 
-	log.Printf("Server running on port %s", port)
-	log.Fatal(http.ListenAndServe(":"+port, nil))
+	srv := &http.Server{Addr: ":" + port, Handler: mux}
+
+	go func() {
+		log.Printf("Server running on port %s", port)
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("listen: %s", err)
+		}
+	}()
+
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	<-quit
+	log.Println("Shutting down...")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := srv.Shutdown(ctx); err != nil {
+		log.Fatalf("forced shutdown: %v", err)
+	}
+	if db != nil {
+		db.Close()
+	}
 }
