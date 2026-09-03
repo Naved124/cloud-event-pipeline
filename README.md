@@ -1,7 +1,7 @@
 # Cloud Event Pipeline & Server Health Logger
 
 A production-grade, containerized Go backend integrated with a PostgreSQL database, automatically provisioned on AWS via Infrastructure as Code (IaC), and deployed through a continuous deployment (CD) pipeline.
-
+> This project's focus is infrastructure and deployment automation — Docker, Terraform, CI/CD, and secrets handling — rather than application features. The API itself is intentionally minimal (health check + a simple events table).
 ---
 
 ## Architecture & Tech Stack
@@ -44,7 +44,7 @@ Rather than reopening SSH to the world, the deploy mechanism was switched to AWS
 The SSM command targets `Key=tag:Name,Values=CloudEventPipelineServer` rather than a hardcoded instance ID. This means the pipeline keeps working automatically even if the underlying EC2 instance is destroyed and recreated (e.g. during infrastructure iteration) — no secrets need updating afterward, as long as the new instance carries the same tag. The IAM policy is scoped the same way, using a `ssm:resourceTag/Name` condition instead of a fixed instance ARN.
 
 **Secrets management.**
-Database credentials (`DB_USER`, `DB_PASSWORD`, `DB_NAME`) are stored as GitHub Actions secrets and injected into a `.env` file on the instance at deploy time — never committed to version control. Locally, the same three variables live in a gitignored `.env` file in the project root.
+Database credentials (`DB_USER`, `DB_PASSWORD`, `DB_NAME`) and the API key are stored in AWS Systems Manager Parameter Store (`SecureString`, under `/cloud-event-pipeline/*`), not as GitHub Actions secrets. At deploy time, the EC2 instance's IAM role — scoped to `ssm:GetParameter` on that path only — pulls the values itself and writes them into a local `.env` file. This means secret values never appear in the SSM command text sent from GitHub Actions, only parameter *names* do, keeping them out of CloudTrail/SSM command history. Locally, the same variables live in a gitignored `.env` file in the project root.
 
 **Other hardening decisions.**
 - PostgreSQL's port is not published to the host — the API reaches it only over Docker's internal network.
@@ -55,12 +55,24 @@ Database credentials (`DB_USER`, `DB_PASSWORD`, `DB_NAME`) are stored as GitHub 
 ## Local Development
 
 Create a `.env` file in the project root (not committed — see `.gitignore`):
+
 DB_USER=appuser
 DB_PASSWORD=your-local-password
 DB_NAME=eventdb
+API_KEY=your-local-api-key
+
+Generate an API key with `openssl rand -hex 32`.
 
 Then:
 ```bash
 docker compose up --build
 ```
-Check `http://localhost:8080/health` — should report `"database": "connected"`
+Check `http://localhost:8080/health` — should report `"database": "connected"`.
+
+`/events` requires an API key:
+```bash
+curl -H "X-API-Key: your-local-api-key" http://localhost:8080/events
+
+curl -X POST -H "X-API-Key: your-local-api-key" -H "Content-Type: application/json" \
+  -d '{"payload":"hello"}' http://localhost:8080/events
+```
