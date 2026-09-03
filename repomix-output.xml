@@ -103,11 +103,47 @@ EXPOSE 8080
 CMD ["./server"]
 </file>
 
+<file path="docker-compose.yml">
+services:
+  api:
+    build: .
+    ports:
+      - "8080:8080"
+    environment:
+      - DB_HOST=postgres
+      - DB_USER=${DB_USER}
+      - DB_PASSWORD=${DB_PASSWORD}
+      - DB_NAME=${DB_NAME}
+      - DB_PORT=5432
+      - API_KEY=${API_KEY}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      - POSTGRES_USER=${DB_USER}
+      - POSTGRES_PASSWORD=${DB_PASSWORD}
+      - POSTGRES_DB=${DB_NAME}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  pgdata:
+</file>
+
 <file path="main.go">
 package main
 
 import (
 	"context"
+	"crypto/subtle"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -163,14 +199,18 @@ func initDB() {
 			payload TEXT NOT NULL,
 			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 		);`
-		db.Exec(query)
+		if _, err := db.Exec(query); err != nil {
+			log.Printf("ERROR: failed to create events table: %v", err)
+		}
 	}
 }
 
 func requireAPIKey(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		apiKey := os.Getenv("API_KEY")
-		if apiKey == "" || r.Header.Get("X-API-Key") != apiKey {
+		providedKey := r.Header.Get("X-API-Key")
+
+		if apiKey == "" || subtle.ConstantTimeCompare([]byte(providedKey), []byte(apiKey)) != 1 {
 			http.Error(w, `{"error":"Unauthorized"}`, http.StatusUnauthorized)
 			return
 		}
@@ -286,41 +326,6 @@ func main() {
 }
 </file>
 
-<file path="docker-compose.yml">
-services:
-  api:
-    build: .
-    ports:
-      - "8080:8080"
-    environment:
-      - DB_HOST=postgres
-      - DB_USER=${DB_USER}
-      - DB_PASSWORD=${DB_PASSWORD}
-      - DB_NAME=${DB_NAME}
-      - DB_PORT=5432
-      - API_KEY=${API_KEY}
-    depends_on:
-      postgres:
-        condition: service_healthy
-
-  postgres:
-    image: postgres:16-alpine
-    environment:
-      - POSTGRES_USER=${DB_USER}
-      - POSTGRES_PASSWORD=${DB_PASSWORD}
-      - POSTGRES_DB=${DB_NAME}
-    volumes:
-      - pgdata:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME}"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
-
-volumes:
-  pgdata:
-</file>
-
 <file path="README.md">
 # Cloud Event Pipeline & Server Health Logger
 
@@ -373,6 +378,8 @@ Database credentials (`DB_USER`, `DB_PASSWORD`, `DB_NAME`) and the API key are s
 **Other hardening decisions.**
 - PostgreSQL's port is not published to the host — the API reaches it only over Docker's internal network.
 - The EC2 key pair's public key is read dynamically via Terraform's `file()` function rather than hardcoded, so rotating keys never requires editing `main.tf`.
+- The `/events` API key check uses `crypto/subtle.ConstantTimeCompare` rather than a plain `!=` string comparison, removing a timing side-channel on the key value.
+- Errors from the startup `CREATE TABLE IF NOT EXISTS` are now logged instead of silently discarded, so a schema-creation failure shows up in the container logs immediately rather than as a confusing `500` on the first `/events` call.
 
 ---
 
